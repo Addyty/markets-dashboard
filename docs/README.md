@@ -2,7 +2,11 @@
 
 An interactive Tableau dashboard comparing the S&P 500 with the Technology Select Sector SPDR ETF (XLK) over five years. It shows how much each investment grew, how far each one fell from its peak, and how the two compare sector by sector.
 
-**Live dashboard:** [Tableau Public link](https://public.tableau.com:9443/views/Release1GlobalMarketsSP500vsTechnology20212025/Overview?:language=en-GB&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link)
+**Live Dashboard:** [View Interactive Dashboard on Tableau Public](https://public.tableau.com:9443/views/Release1GlobalMarketsSP500vsTechnology20212025/Overview?:language=en-GB&:sid=&:redirect=auth&:display_count=n&:origin=viz_share_link)
+
+![Overview Dashboard](./overview.png)
+
+![Sector vs Market Dashboard](./sector_vs_market.png)
 
 ![Overview Dashboard](./overview.png)
 
