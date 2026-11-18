@@ -89,6 +89,12 @@ def save(prices, summary):
     summary.to_sql("kpi_summary", conn, if_exists="replace", index=False)
     conn.close()
 
+    # One Excel file, three sheets: easiest to upload to Tableau Cloud
+    with pd.ExcelWriter(OUT / "markets.xlsx") as xl:
+        prices.to_excel(xl, sheet_name="fact_prices", index=False)
+        dim.to_excel(xl, sheet_name="dim_ticker", index=False)
+        summary.to_excel(xl, sheet_name="kpi_summary", index=False)
+
 
 if __name__ == "__main__":
     prices = fetch_prices(list(TICKERS))

@@ -1,106 +1,135 @@
-# Global Markets Dashboard: S&P 500 (SPY) vs Technology, 2021–2025
+# Global Markets Dashboard: S&P 500 (SPY) vs Technology (XLK), 2021–2025
 
-An interactive Tableau dashboard comparing the S&P 500 (through the SPY ETF) with the Technology Select Sector SPDR ETF (XLK) over five years. It shows how much each investment grew, how far each one fell from its peak, and how the two compare sector by sector.
+A Python data pipeline and Tableau dashboard comparing the broad US stock market (the S&P 500, through the SPY ETF) with the technology sector (the Technology Select Sector SPDR ETF, XLK) over five years. It shows how much each grew, how far each fell from its peak, and how risky each one was.
 
-**Live Dashboard:** [View Interactive Dashboard on Tableau Public](https://public.tableau.com/app/profile/aaditya.tyagi/viz/Release1GlobalMarketsSP500vsTechnology20212025/Overview)
+**Live dashboard:** [View on Tableau Public](https://public.tableau.com/app/profile/aaditya.tyagi/viz/release1_market/Overview)
 
-![Overview Dashboard](docs/overview.png)
+**Workbook:** [`tableau/release1_markets.twbx`](tableau/release1_markets.twbx). Open it in Tableau Desktop or Tableau Public.
 
-![Sector vs Market Dashboard](docs/sector_vs_market.png)
+![Overview dashboard](docs/overview.png)
+
+![Sector vs Market dashboard](docs/sector_vs_market.png)
 
 ---
 
 ## The question it answers
 
-Over 2021–2025, how did the broad US market and the technology sector perform, and how much value did investors lose along the way?
-
-## What the dashboard shows
-
-- **Overview:** KPI table (total return, CAGR, annual volatility, max drawdown), a drawdown chart, and a growth-of-100 chart, with a ticker filter.
-- **Sector vs Market:** the same KPIs and growth chart, with a sector filter.
-- **Notes:** data source, date range, KPI definitions, and a disclaimer.
+From 2021 to 2025, how did the broad US market and the technology sector perform, and how much value did investors lose along the way?
 
 ## Key results (2021–2025)
 
-| Ticker | Total return | CAGR | Annual volatility | Max drawdown | Max drawdown date |
+| ETF | Total return | CAGR | Annual volatility | Max drawdown | Max drawdown date |
 |---|---|---|---|---|---|
 | S&P 500 (SPY) | 98.1% | 14.7% | 17.1% | −24.5% | 12 Oct 2022 |
 | Technology Select Sector SPDR (XLK) | 134.1% | 18.6% | 24.7% | −33.6% | 12 Oct 2022 |
 
-Technology grew faster but also fell further and was more volatile. Both reached their lowest point on the same day, 12 October 2022, during the 2022 sell-off.
+- **Technology grew faster.** 100 invested in XLK became about 234, compared with about 198 in SPY.
+- **Technology was riskier.** XLK was about 45% more volatile than SPY and fell further in every major sell-off: 2022, mid-2024 and April 2025.
+- **Both hit their lowest point on the same day,** 12 October 2022, during the 2022 bear market.
+
+In short, tech's extra return came with deeper and more frequent losses along the way.
+
+## What the dashboard shows
+
+| Dashboard | Contents |
+|---|---|
+| **Overview** | KPI table, a growth-of-100 chart and a drawdown chart, with a filter to pick one or both ETFs |
+| **Sector vs Market** | KPI table, total return by sector and the growth-of-100 chart, with a sector filter |
+| **Notes** | Data source, date range, KPI definitions and disclaimer |
+
+![Notes dashboard](docs/notes.png)
+
+## How it works
+
+```
+Yahoo Finance ──► pull_prices.py ──► data/ (CSV, Excel, SQLite) ──► Tableau Cloud ──► dashboards
+                   (download,
+                    clean, KPIs)
+```
+
+1. **Extract:** `scripts/pull_prices.py` downloads daily prices for SPY and XLK with `yfinance`. Prices are adjusted for splits and dividends.
+2. **Transform:** the script stacks both ETFs into one long table and adds daily return, running peak, drawdown and growth-of-100 columns. It then calculates one row of KPIs per ETF.
+3. **Load:** the script saves the results as a small star schema:
+   - `fact_prices`: one row per ETF per trading day (2,510 rows)
+   - `dim_ticker`: one row per ETF, with name, sector, asset type and country
+   - `kpi_summary`: the headline KPIs per ETF, used to check the Tableau numbers
+4. **Visualise:** Tableau joins the tables with relationships on `ticker`. It recalculates every KPI with its own calculated fields (LOD expressions), and the results **match the Python output exactly**.
 
 ## Data source
 
-- **Prices:** Yahoo Finance, downloaded with the Python package [`yfinance`](https://github.com/ranaroussi/yfinance). Prices are adjusted for splits and dividends.
-- **Date range:** 1 January 2021 to 31 December 2025, daily trading data (1,255 trading days per ticker).
-- **Tickers:** `SPY` (S&P 500 benchmark) and `XLK` (Technology Select Sector SPDR ETF).
-- **Why SPY:** SPY tracks the S&P 500 and its adjusted prices include reinvested dividends, the same as the sector ETFs. The S&P 500 index (`^GSPC`) excludes dividends, so it would not be a fair comparison.
+- **Prices:** Yahoo Finance, downloaded with [`yfinance`](https://github.com/ranaroussi/yfinance), adjusted for splits and dividends.
+- **Period:** 4 January 2021 to 31 December 2025, daily, 1,255 trading days per ETF.
+- **Tickers:** `SPY` (SPDR S&P 500 ETF) and `XLK` (Technology Select Sector SPDR ETF).
+- **Why SPY instead of the S&P 500 index (`^GSPC`):** the index excludes dividends, while ETF prices include them once adjusted. Using SPY compares like with like.
 
-Yahoo Finance data is provided for personal use, so this repository doesn't include the raw data files. Run the script to generate them.
+The raw CSV, Excel and SQLite files are not committed. Run the script to regenerate them. The packaged workbook (`tableau/release1_markets.twbx`) includes a data extract so it opens on its own. Yahoo Finance data is for personal, non-commercial use.
 
 ## Project structure
 
 ```
 markets-dashboard/
 ├── scripts/
-│   └── pull_prices.py      # downloads prices and calculates KPIs
-├── data/                   # generated by the script (not committed)
-│   ├── fact_prices.csv     # one row per ticker per trading day
-│   ├── dim_ticker.csv      # one row per ticker: name, sector, country
-│   ├── kpi_summary.csv     # one row per ticker: headline KPIs
-│   └── markets.db          # the same three tables in SQLite
+│   └── pull_prices.py          # download, clean, calculate KPIs, save outputs
+├── data/                       # generated by the script
+│   ├── fact_prices.csv
+│   ├── dim_ticker.csv
+│   ├── kpi_summary.csv
+│   ├── markets.xlsx            # all three tables as sheets, for uploading to Tableau Cloud
+│   └── markets.db              # SQLite copy for SQL practice
 ├── tableau/
-│   └── release1_markets.twb
-├── docs/                   # screenshots
+│   └── release1_markets.twbx   # packaged Tableau workbook
+├── docs/                       # dashboard screenshots
 ├── requirements.txt
 └── README.md
 ```
 
-The data follows a star schema: `fact_prices` holds the daily measurements, `dim_ticker` describes each ticker, and they join on `ticker`.
-
 ## How to run it
 
-**Requirements:** Python 3.10 or newer, and Tableau Public or Tableau Desktop.
+**Requirements:** Python 3.10 or newer.
 
-1. Open a terminal in the `markets-dashboard` folder.
+1. Clone the repository and open a terminal in the project folder.
 2. Create and activate a virtual environment:
    ```bash
    python3 -m venv .venv
-   source .venv/bin/activate
+   source .venv/bin/activate        # Windows: .venv\Scripts\Activate.ps1
    ```
-   On Windows (PowerShell), use `.venv\Scripts\Activate.ps1` instead of the `source` line.
 3. Install the packages:
    ```bash
    pip install -r requirements.txt
    ```
-4. Run the script:
+4. Run the pipeline:
    ```bash
    python scripts/pull_prices.py
    ```
-   It prints the KPI table and writes the four files to `data/`.
-5. Open `tableau/release1_markets.twb`. If Tableau can't find the data, use **Data → Edit Data Source** and point it at the CSV files in your `data/` folder.
+   It prints the KPI table and writes five files to `data/`.
+5. Open `tableau/release1_markets.twbx` in Tableau. Or build your own: upload `data/markets.xlsx` to Tableau Cloud and relate the three tables on `ticker`.
 
 ## How the numbers are calculated
 
-- **Total return:** last close ÷ first close − 1
-- **CAGR:** (last close ÷ first close)^(1 ÷ years) − 1, with years = days ÷ 365.25
-- **Annual volatility:** standard deviation of daily returns × √252
-- **Drawdown:** close ÷ running peak close − 1
-- **Max drawdown:** the lowest drawdown in the period
-- **Growth of 100:** each close ÷ first close × 100
+| KPI | Formula |
+|---|---|
+| Total return | last close ÷ first close − 1 |
+| CAGR | (last close ÷ first close)^(1 ÷ years) − 1, where years = days ÷ 365.25 |
+| Annual volatility | standard deviation of daily returns × √252 |
+| Drawdown | close ÷ highest close so far − 1 |
+| Max drawdown | the lowest drawdown in the period |
+| Growth of 100 | close ÷ first close × 100 |
+
+In Tableau, the first and last close per ETF are found with `{ FIXED [Ticker] : ... }` LOD expressions. That keeps the KPIs correct whichever filters are applied to the ETF or sector.
 
 ## Limitations
 
-- Two tickers only: the S&P 500 (via SPY) and one sector ETF.
-- Yahoo Finance data isn't an official source and can contain gaps or revisions.
-- Drawdown is measured from the running peak since January 2021, so it doesn't reset if you filter to a later start date.
-- Past performance doesn't predict future results. This is a learning project, not financial advice.
+- Only two ETFs so far: the broad market and one sector.
+- Yahoo Finance is not an official data source and can contain gaps or later revisions.
+- Drawdown is measured from the running peak since January 2021, not from all-time highs.
+- The sector filter has only two values for now; it becomes more useful as sectors are added.
+- Past performance does not predict future results. This is a learning project, not financial advice.
 
 ## Next steps (Release 2)
 
-- Add more sectors (energy, healthcare, financials, consumer, industrials)
-- Add an investor wipeout module with event markers (rate decisions, sanctions, AI sell-offs)
-- Add country-level FDI data from UNCTAD and the World Bank
+- Add more sector ETFs: energy, healthcare, financials, consumer and industrials.
+- Add an "investor wipeout" view with event markers (rate decisions, sanctions, AI sell-offs).
+- Add country-level foreign direct investment data from UNCTAD and the World Bank.
 
 ## Author
 
