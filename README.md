@@ -6,7 +6,7 @@ An interactive Tableau dashboard comparing the S&P 500 with the Technology Selec
 
 ![Overview Dashboard](docs/overview.png)
 
-![Sector vs Market Dashboard](./sector_vs_market.png)
+![Sector vs Market Dashboard](docs/sector_vs_market.png)
 
 
 
