@@ -4,7 +4,7 @@ An interactive Tableau dashboard comparing the S&P 500 with the Technology Selec
 
 **Live Dashboard:** [View Interactive Dashboard on Tableau Public](https://public.tableau.com/app/profile/aaditya.tyagi/viz/Release1GlobalMarketsSP500vsTechnology20212025/Overview)
 
-![Overview Dashboard](./overview.png)
+![Overview Dashboard](docs/overview.png)
 
 ![Sector vs Market Dashboard](./sector_vs_market.png)
 
