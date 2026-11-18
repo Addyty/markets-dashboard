@@ -13,7 +13,7 @@ OUT = Path("data")
 
 # The tickers we track, with descriptive fields for the dim_ticker table
 TICKERS = {
-    "^GSPC": {"name": "S&P 500", "asset_type": "Index", "sector": "Broad Market", "country": "United States"},
+    "SPY": {"name": "S&P 500 (SPY)", "asset_type": "ETF", "sector": "Broad Market", "country": "United States"},
     "XLK": {"name": "Technology Select Sector SPDR", "asset_type": "ETF", "sector": "Technology", "country": "United States"},
 }
 
