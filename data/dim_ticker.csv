@@ -1,0 +1,3 @@
+ticker,name,asset_type,sector,country
+^GSPC,S&P 500,Index,Broad Market,United States
+XLK,Technology Select Sector SPDR,ETF,Technology,United States
