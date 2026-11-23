@@ -26,22 +26,92 @@ TICKERS = {
 
 
 def fetch_prices(tickers):
-    """Download daily prices for each ticker and stack them into one long table."""
-    frames = []
+    """Download daily prices for each ticker and stack them into one long table.
+
+    Stops the run if any ticker returns no data, so a partial dataset
+    can never be saved and mistaken for a complete one.
+    """
+    frames, missing = [], []
     for t in tickers:
         df = yf.Ticker(t).history(start=START, end=END, auto_adjust=True)
         if df.empty:
-            print(f"No data returned for {t}")
+            missing.append(t)
             continue
         df = df.reset_index()[["Date", "Open", "High", "Low", "Close", "Volume"]]
         df["ticker"] = t
         frames.append(df)
-    if not frames:
-        raise SystemExit("No data downloaded. Check your internet connection and try again.")
+    if missing:
+        raise SystemExit(
+            f"No data returned for: {', '.join(missing)}. "
+            "Stopping so that no incomplete files are saved."
+        )
     out = pd.concat(frames, ignore_index=True)
     # Remove the timezone so dates save cleanly to CSV and SQLite
     out["Date"] = pd.to_datetime(out["Date"]).dt.tz_localize(None)
     return out.rename(columns=str.lower)
+
+
+def validate(df, tickers):
+    """Run data-quality checks on the raw prices.
+
+    Prints a PASS/FAIL report and stops the run if any check fails,
+    before anything is written to disk.
+    """
+    checks = []
+
+    def check(name, passed, detail=""):
+        checks.append((name, bool(passed), detail))
+
+    price_cols = ["open", "high", "low", "close"]
+
+    # 1. Coverage: every requested ticker came back
+    found = sorted(df["ticker"].unique())
+    check("All requested tickers present", set(found) == set(tickers), f"found {found}")
+
+    # 2. Uniqueness: one row per ticker per day
+    dupes = int(df.duplicated(["ticker", "date"]).sum())
+    check("No duplicate ticker-date rows", dupes == 0, f"{dupes} duplicates")
+
+    # 3. Completeness: no blank prices
+    nulls = int(df[price_cols].isna().sum().sum())
+    check("No missing prices", nulls == 0, f"{nulls} missing values")
+
+    # 4. Plausibility: prices must be positive, and high must be >= low
+    bad = int((df[price_cols] <= 0).sum().sum())
+    check("All prices positive", bad == 0, f"{bad} zero or negative values")
+    inverted = int((df["high"] < df["low"]).sum())
+    check("High >= low on every row", inverted == 0, f"{inverted} rows")
+
+    # 5. Window: no dates outside START..END
+    first, last = df["date"].min(), df["date"].max()
+    in_window = first >= pd.Timestamp(START) and last < pd.Timestamp(END)
+    check("Dates inside the requested window", in_window, f"{first.date()} to {last.date()}")
+
+    # 6. Order: dates run forwards for each ticker
+    ordered = all(g["date"].is_monotonic_increasing for _, g in df.groupby("ticker"))
+    check("Dates in chronological order", ordered)
+
+    # 7. Alignment: every ticker has exactly the same trading dates
+    date_sets = df.groupby("ticker")["date"].apply(frozenset)
+    check("Same trading dates for every ticker", len(set(date_sets)) == 1)
+
+    # 8. Volume of data: about 252 trading days a year (allow +/- 2%)
+    counts = df.groupby("ticker")["date"].count()
+    years = (pd.Timestamp(END) - pd.Timestamp(START)).days / 365.25
+    expected = 252 * years
+    low, high = round(expected * 0.98), round(expected * 1.02)
+    check(f"Trading days per ticker between {low} and {high}",
+          counts.between(low, high).all(), counts.to_dict())
+
+    # Report
+    print("Data validation")
+    for name, passed, detail in checks:
+        mark = "PASS" if passed else "FAIL"
+        print(f"  [{mark}] {name}" + (f"  ({detail})" if detail != "" else ""))
+    failed = [c for c in checks if not c[1]]
+    if failed:
+        raise SystemExit(f"\n{len(failed)} check(s) failed. No files were saved.")
+    print(f"  All {len(checks)} checks passed.\n")
 
 
 def add_metrics(df):
@@ -98,6 +168,7 @@ def save(prices, summary):
 
 if __name__ == "__main__":
     prices = fetch_prices(list(TICKERS))
+    validate(prices, list(TICKERS))
     metrics = add_metrics(prices)
     summary = summarize(metrics)
     save(metrics, summary)
