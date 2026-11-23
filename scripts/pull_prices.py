@@ -4,6 +4,7 @@ Run from the project root:
     python scripts/pull_prices.py
 """
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pandas as pd
@@ -12,6 +13,14 @@ import yfinance as yf
 # Date range. yfinance excludes the end date, so 2026-01-01 includes all of 2025.
 START = "2021-01-01"
 END = "2026-01-01"
+
+# US trading days in a year, used to annualise daily figures
+TRADING_DAYS = 252
+
+# Annual risk-free rate for the Sharpe and Sortino ratios. The 13-week US Treasury
+# bill yield (^IRX) averaged 3.21% over 2021-2025, rounded to 3.2%.
+# See docs/methodology.md.
+RISK_FREE_RATE = 0.032
 
 # Output folder, resolved from this file so the script works from any directory
 OUT = Path(__file__).resolve().parent.parent / "data"
@@ -115,14 +124,59 @@ def validate(df, tickers):
 
 
 def add_metrics(df):
-    """Add daily return, running peak, drawdown and growth-of-100 columns."""
+    """Add daily return, running peak, drawdown, growth-of-100 and rolling columns."""
     df = df.sort_values(["ticker", "date"]).copy()
     grp = df.groupby("ticker")["close"]
     df["daily_return"] = grp.pct_change()                # today vs yesterday
     df["running_peak"] = grp.cummax()                    # highest close so far
     df["drawdown"] = df["close"] / df["running_peak"] - 1
     df["indexed"] = grp.transform(lambda s: s / s.iloc[0] * 100)
+
+    # Rolling windows, in trading days: 21 is about one month, 63 about three months.
+    # Each value uses only the window ending on that day, and stays blank until
+    # the window is full.
+    ret = df.groupby("ticker")["daily_return"]
+    df["rolling_vol_21d"] = ret.transform(lambda s: s.rolling(21).std() * TRADING_DAYS ** 0.5)
+    df["rolling_vol_63d"] = ret.transform(lambda s: s.rolling(63).std() * TRADING_DAYS ** 0.5)
+    df["rolling_return_252d"] = grp.transform(lambda s: s / s.shift(TRADING_DAYS) - 1)
     return df
+
+
+def drawdown_periods(df):
+    """One row per drawdown episode: from a peak, down to the trough, back to the peak.
+
+    An episode starts on the last day at a running peak and ends on the first
+    day the close gets back to that peak. Durations are counted in trading days.
+    An episode still open at the end of the sample has no recovery date, and
+    its time underwater runs to the last day.
+    """
+    rows = []
+    for t, g in df.groupby("ticker"):
+        g = g.reset_index(drop=True)
+        underwater = g["drawdown"] < 0
+        # A new episode begins on each day that goes from at-peak to below-peak
+        episode = (underwater & ~underwater.shift(fill_value=False)).cumsum()
+        for _, e in g[underwater].groupby(episode[underwater]):
+            peak_i = e.index[0] - 1             # last day at the peak
+            trough_i = e["drawdown"].idxmin()
+            end_i = e.index[-1] + 1             # first day back at the peak
+            recovered = end_i < len(g)
+            rows.append({
+                "ticker": t,
+                "peak_date": g.loc[peak_i, "date"].date(),
+                "trough_date": g.loc[trough_i, "date"].date(),
+                "recovery_date": g.loc[end_i, "date"].date() if recovered else None,
+                "depth": g.loc[trough_i, "drawdown"],
+                "days_peak_to_trough": trough_i - peak_i,
+                "days_trough_to_recovery": end_i - trough_i if recovered else None,
+                "days_underwater": (end_i if recovered else len(g) - 1) - peak_i,
+                "recovered": recovered,
+            })
+    out = pd.DataFrame(rows, columns=[
+        "ticker", "peak_date", "trough_date", "recovery_date", "depth",
+        "days_peak_to_trough", "days_trough_to_recovery", "days_underwater", "recovered",
+    ])
+    return out.astype({"days_trough_to_recovery": "Int64"})
 
 
 def summarize(df):
@@ -132,38 +186,92 @@ def summarize(df):
         first, last = g["close"].iloc[0], g["close"].iloc[-1]
         years = (g["date"].iloc[-1] - g["date"].iloc[0]).days / 365.25
         worst = g.loc[g["drawdown"].idxmin()]
+        cagr = (last / first) ** (1 / years) - 1
+
+        # Risk-adjusted returns use daily returns in excess of the risk-free rate
+        excess = g["daily_return"].dropna() - RISK_FREE_RATE / TRADING_DAYS
+        downside = ((excess.clip(upper=0) ** 2).mean()) ** 0.5   # only below-target days count
+        sharpe = excess.mean() / excess.std() * TRADING_DAYS ** 0.5
+        sortino = excess.mean() / downside * TRADING_DAYS ** 0.5 if downside > 0 else float("nan")
+        calmar = cagr / abs(worst["drawdown"]) if worst["drawdown"] < 0 else float("nan")
+
+        # Recovery: from the episode that holds the maximum drawdown
+        episodes = drawdown_periods(g)
+        if episodes.empty:
+            recovery_date, days_to_recover, longest_underwater = None, None, 0
+        else:
+            deepest = episodes.loc[episodes["depth"].idxmin()]
+            recovery_date = deepest["recovery_date"]
+            days_to_recover = deepest["days_trough_to_recovery"]
+            longest_underwater = int(episodes["days_underwater"].max())
+
         rows.append({
             "ticker": t,
             "total_return": last / first - 1,
-            "cagr": (last / first) ** (1 / years) - 1,
-            "annual_volatility": g["daily_return"].std() * (252 ** 0.5),
+            "cagr": cagr,
+            "annual_volatility": g["daily_return"].std() * TRADING_DAYS ** 0.5,
             "max_drawdown": worst["drawdown"],
             "max_drawdown_date": worst["date"].date(),
             "latest_close": last,
+            "sharpe_ratio": sharpe,
+            "sortino_ratio": sortino,
+            "calmar_ratio": calmar,
+            "max_drawdown_recovery_date": recovery_date,
+            "days_to_recover": None if pd.isna(days_to_recover) else int(days_to_recover),
+            "longest_underwater_days": longest_underwater,
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows).astype({"days_to_recover": "Int64"})
 
 
-def save(prices, summary):
-    """Write CSVs for Tableau and a SQLite database for SQL practice."""
+def period_returns(df, freq):
+    """Return per ETF per calendar period: period-end close ÷ previous period-end close − 1.
+
+    freq is "ME" for months or "YE" for years. The first period is measured from
+    the first observed close, the same convention as the SQL scripts.
+    """
+    frames = []
+    for t, g in df.groupby("ticker"):
+        close = g.set_index("date")["close"]
+        # Drop empty periods, so each period compares with the last one that had trading
+        ends = close.resample(freq).last().dropna()
+        returns = ends / ends.shift(1).fillna(close.iloc[0]) - 1
+        frames.append(pd.DataFrame({"ticker": t, "period_end": ends.index, "return": returns.values}))
+    return pd.concat(frames, ignore_index=True)
+
+
+def monthly_returns(df):
+    """One row per ETF per month, with year and month number for a heatmap."""
+    m = period_returns(df, "ME")
+    return pd.DataFrame({
+        "ticker": m["ticker"],
+        "year": m["period_end"].dt.year,
+        "month": m["period_end"].dt.month,
+        "month_label": m["period_end"].dt.strftime("%Y-%m"),
+        "monthly_return": m["return"],
+    })
+
+
+def annual_returns(df):
+    """One row per ETF per calendar year."""
+    a = period_returns(df, "YE")
+    return pd.DataFrame({"ticker": a["ticker"], "year": a["period_end"].dt.year,
+                         "annual_return": a["return"]})
+
+
+def dim_ticker():
+    """The descriptive table: one row per ETF."""
+    return pd.DataFrame([{"ticker": t, **meta} for t, meta in TICKERS.items()])
+
+
+def save(tables):
+    """Write every table as a CSV, a SQLite table and an Excel sheet."""
     OUT.mkdir(exist_ok=True)
-    dim = pd.DataFrame([{"ticker": t, **meta} for t, meta in TICKERS.items()])
-
-    prices.to_csv(OUT / "fact_prices.csv", index=False)
-    dim.to_csv(OUT / "dim_ticker.csv", index=False)
-    summary.to_csv(OUT / "kpi_summary.csv", index=False)
-
-    conn = sqlite3.connect(OUT / "markets.db")
-    prices.to_sql("fact_prices", conn, if_exists="replace", index=False)
-    dim.to_sql("dim_ticker", conn, if_exists="replace", index=False)
-    summary.to_sql("kpi_summary", conn, if_exists="replace", index=False)
-    conn.close()
-
-    # One Excel file, three sheets: easiest to upload to Tableau Cloud
-    with pd.ExcelWriter(OUT / "markets.xlsx") as xl:
-        prices.to_excel(xl, sheet_name="fact_prices", index=False)
-        dim.to_excel(xl, sheet_name="dim_ticker", index=False)
-        summary.to_excel(xl, sheet_name="kpi_summary", index=False)
+    with closing(sqlite3.connect(OUT / "markets.db")) as conn, \
+            pd.ExcelWriter(OUT / "markets.xlsx") as xl:
+        for name, table in tables.items():
+            table.to_csv(OUT / f"{name}.csv", index=False)
+            table.to_sql(name, conn, if_exists="replace", index=False)
+            table.to_excel(xl, sheet_name=name, index=False)
 
 
 if __name__ == "__main__":
@@ -171,6 +279,14 @@ if __name__ == "__main__":
     validate(prices, list(TICKERS))
     metrics = add_metrics(prices)
     summary = summarize(metrics)
-    save(metrics, summary)
-    print(summary.round(4).to_string(index=False))
-    print(f"\nSaved {len(metrics):,} price rows to {OUT}")
+    tables = {
+        "fact_prices": metrics,
+        "dim_ticker": dim_ticker(),
+        "kpi_summary": summary,
+        "monthly_returns": monthly_returns(metrics),
+        "annual_returns": annual_returns(metrics),
+        "drawdown_periods": drawdown_periods(metrics),
+    }
+    save(tables)
+    print(summary.set_index("ticker").T.to_string())
+    print(f"\nSaved {len(tables)} tables to {OUT}: {', '.join(tables)}")

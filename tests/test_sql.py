@@ -66,3 +66,38 @@ def test_drawdown_summary_matches_python(db):
     for row in run(con, "05_drawdown_summary.sql"):
         assert row["max_drawdown"] == pytest.approx(kpi.loc[row["ticker"], "max_drawdown"], abs=1e-4)
         assert row["days_10pct_or_more_below"] <= row["days_below_peak"] <= row["trading_days"]
+
+
+def test_python_period_tables_match_the_sql_scripts(db, full_prices):
+    from pull_prices import annual_returns, monthly_returns
+    con, _ = db
+    metrics = add_metrics(full_prices)
+    py_m = monthly_returns(metrics)
+    sql_m = run(con, "03_monthly_returns.sql")
+    assert len(py_m) == len(sql_m)
+    for py_row, sql_row in zip(py_m.itertuples(), sql_m):
+        assert (py_row.ticker, py_row.month_label) == (sql_row["ticker"], sql_row["month"])
+        assert round(py_row.monthly_return, 4) == pytest.approx(sql_row["monthly_return"])
+
+    py_a = annual_returns(metrics).set_index(["ticker", "year"])["annual_return"]
+    for row in run(con, "02_annual_returns.sql"):
+        assert round(py_a[(row["ticker"], int(row["year"]))], 4) == pytest.approx(row["annual_return"])
+
+
+def test_save_writes_every_table_in_every_format(tmp_path, monkeypatch, full_prices):
+    import pandas as pd
+    import pull_prices
+    monkeypatch.setattr(pull_prices, "OUT", tmp_path)
+    metrics = add_metrics(full_prices)
+    tables = {
+        "fact_prices": metrics,
+        "kpi_summary": summarize(metrics),
+        "drawdown_periods": pull_prices.drawdown_periods(metrics),
+    }
+    pull_prices.save(tables)
+    with sqlite3.connect(tmp_path / "markets.db") as con:
+        names = {r[0] for r in con.execute("select name from sqlite_master where type='table'")}
+    sheets = set(pd.ExcelFile(tmp_path / "markets.xlsx").sheet_names)
+    for name, table in tables.items():
+        assert len(pd.read_csv(tmp_path / f"{name}.csv")) == len(table)
+        assert name in names and name in sheets
