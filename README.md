@@ -1,5 +1,7 @@
 # Global Markets Dashboard: S&P 500 (SPY) vs Technology (XLK), 2021–2025
 
+[![tests](https://github.com/Addyty/markets-dashboard/actions/workflows/tests.yml/badge.svg)](https://github.com/Addyty/markets-dashboard/actions/workflows/tests.yml)
+
 A Python data pipeline and Tableau dashboard comparing the broad US stock market (the S&P 500, through the SPY ETF) with the technology sector (the Technology Select Sector SPDR ETF, XLK) over five years. It shows how much each grew, how far each fell from its peak, and how risky each one was.
 
 **Live dashboard:** [View on Tableau Public](https://public.tableau.com/app/profile/aaditya.tyagi/viz/release1_market/Overview)
@@ -26,6 +28,7 @@ From 2021 to 2025, how did the broad US market and the technology sector perform
 - **Technology grew faster.** 100 invested in XLK became about 234, compared with about 198 in SPY.
 - **Technology was riskier.** XLK was about 45% more volatile than SPY and fell further in every major sell-off: 2022, mid-2024 and April 2025.
 - **Both hit their lowest point on the same day,** 12 October 2022, during the 2022 bear market.
+- **Tech did not win every year.** XLK beat SPY in 2021, 2023 and 2025, but SPY did better in 2022 (−18.2% vs −27.7%) and 2024 (24.9% vs 21.6%). See [SQL analysis](#sql-analysis).
 
 In short, tech's extra return came with deeper and more frequent losses along the way.
 
@@ -79,10 +82,14 @@ markets-dashboard/
 │   └── markets.db              # SQLite copy for SQL practice
 ├── tableau/
 │   └── release1_markets.twbx   # packaged Tableau workbook
+├── sql/                        # analysis queries on data/markets.db
+├── tests/                      # pytest suite, runs offline on fixed sample data
 ├── docs/
 │   ├── methodology.md          # data basis, return convention, KPI definitions, checks
 │   └── *.png                   # dashboard screenshots
-├── requirements.txt
+├── .github/workflows/tests.yml # runs the tests on every push
+├── requirements.txt            # packages to run the pipeline
+├── requirements-dev.txt        # plus pytest, for running the tests
 └── README.md
 ```
 
@@ -122,6 +129,41 @@ Returns are measured from the first observed close (4 January 2021), and volatil
 
 In Tableau, the first and last close per ETF are found with `{ FIXED [Ticker] : ... }` LOD expressions. That keeps the KPIs correct whichever filters are applied to the ETF or sector.
 
+## SQL analysis
+
+The `sql/` folder holds queries on `data/markets.db`. Each file starts with the business question it answers, and uses window functions (`ROW_NUMBER`, `LAG`, `RANK`) and CTEs.
+
+| Script | Business question | What it found |
+|---|---|---|
+| `01_data_quality.sql` | Is the data complete and consistent? | 1,255 days per ETF, same date range, no duplicates or bad prices |
+| `02_annual_returns.sql` | How did each ETF do each year, and who won? | XLK won 3 of 5 years; SPY won 2022 and 2024 |
+| `03_monthly_returns.sql` | What did each ETF return month by month? | 60 monthly returns per ETF, ready for a heatmap |
+| `04_best_worst_months.sql` | Best and worst months, and how often up? | Both: best Jul 2022, worst Sep 2022. Up months: SPY 41/60 (68%), XLK 38/60 (63%) |
+| `05_drawdown_summary.sql` | How deep were losses, and for how long? | XLK spent 184 days 20%+ below its peak; SPY spent 37 |
+
+Run one from the project folder:
+
+```bash
+sqlite3 -header -column data/markets.db < sql/02_annual_returns.sql
+```
+
+Yearly and monthly returns from SQL were cross-checked against pandas and compound exactly to the five-year total returns above.
+
+## Testing
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+30 tests run in under a second, offline, on fixed sample data with known answers. They cover:
+
+- **KPI formulas:** daily return, drawdown, growth of 100, total return, CAGR, sample volatility × √252, and that each ETF is calculated separately.
+- **Data validation:** clean data passes, and each kind of bad data (missing ticker, duplicate, missing or negative price, high < low, date outside the window, wrong order, misaligned dates, too few days) is stopped by the specific check meant to catch it.
+- **SQL scripts:** every query runs, and yearly and monthly returns compound back to the Python total return.
+
+GitHub Actions runs the suite on every push (see the badge at the top).
+
 ## Limitations
 
 - Only two ETFs so far: the broad market and one sector.
@@ -133,7 +175,7 @@ In Tableau, the first and last close per ETF are found with `{ FIXED [Ticker] : 
 ## Next steps (Release 2)
 
 - Add more sector ETFs: energy, healthcare, financials, consumer and industrials.
-- Add an "investor wipeout" view with event markers (rate decisions, sanctions, AI sell-offs).
+- Add a period-comparison view for clearly dated windows (for example, the 2022 sell-off), describing what the data shows without claiming causes.
 - Add country-level foreign direct investment data from UNCTAD and the World Bank.
 
 ## Author
